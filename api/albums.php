@@ -1,4 +1,4 @@
-<?php
+﻿<?php
 // 相册分页加载接口
 header('Content-Type: application/json; charset=UTF-8');
 mb_internal_encoding('UTF-8');

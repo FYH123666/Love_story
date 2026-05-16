@@ -1,4 +1,4 @@
-<?php
+﻿<?php
 // 后台小工具：简单统计图片体积与相册带宽预估
 // 根据不同操作返回 HTML 或 JSON
 header('Content-Type: text/html; charset=UTF-8');
@@ -26,8 +26,8 @@ if (function_exists('migrate_schema_if_needed')) {
 
 $adminPage = 'tools_stats';
 
-// 每次批处理的最大条数，避免超时
-$batchLimit = 100;
+// 每次批处理的最大条数，避免超时（图片变体生成较慢，用较小值）
+$batchLimit = 20;
 
 // GD 辅助函数（供批处理复用）
 if (!function_exists('load_gd_image')) {
@@ -871,6 +871,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['mode'])) {
         }
     } elseif ($mode === 'fill_variant_fields') {
         // 为历史相册图片生成并填充新变体字段（320px/1200px/WebP）
+        @set_time_limit(120);
         $_batchWebpEnabled = get_setting('image_webp_enabled', '1');
         $_batchThumbEnabled = get_setting('image_thumb_enabled', '1');
         try {
@@ -896,8 +897,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['mode'])) {
             foreach ($rows as $row) {
                 $imagePath = $row['image_path'] ?? '';
                 if ($imagePath === '') continue;
-                $abs = rtrim(UPLOAD_DIR, '/\\') . '/' . ltrim($imagePath, '/');
+                // 兼容各种历史路径格式：完整URL、/uploads/xxx、uploads/xxx、xxx
+                $normalized = $imagePath;
+                if (preg_match('#^https?://[^/]+/#i', $normalized)) {
+                    $normalized = preg_replace('#^https?://[^/]+/#i', '/', $normalized);
+                }
+                $normalized = ltrim($normalized, '/');
+                if (strpos($normalized, 'uploads/') === 0) {
+                    $normalized = substr($normalized, strlen('uploads/'));
+                }
+                $abs = rtrim(UPLOAD_DIR, '/\\') . '/' . ltrim($normalized, '/');
                 if (!is_file($abs)) continue;
+                // 使用归一化后的路径计算 dirname
+                $imagePath = $normalized;
 
                 $info = @getimagesize($abs);
                 if (!$info) continue;
@@ -1202,11 +1214,11 @@ include __DIR__ . '/header.php';
         <div style="font-size:0.88rem;color:var(--text-normal);margin-bottom:0.75rem;">
             <label style="display:inline-flex;align-items:center;margin-right:1rem;font-size:0.85rem;">
                 <input type="checkbox" id="excludeAlbums" checked style="margin-right:0.35rem;">
-                <span>排除已设置为“不压缩相册”的图片</span>
+                <span>排除已设置为"不压缩相册"的图片</span>
             </label>
             <label style="display:inline-flex;align-items:center;font-size:0.85rem;">
                 <input type="checkbox" id="excludeImages" checked style="margin-right:0.35rem;">
-                <span>排除被单独标记为“不压缩”的图片</span>
+                <span>排除被单独标记为"不压缩"的图片</span>
             </label>
         </div>
 
@@ -1237,7 +1249,7 @@ include __DIR__ . '/header.php';
             <div>
                 <div class="admin-card-title">相册图片：补齐缩略图 / WebP</div>
                 <div class="admin-card-subtitle">
-                    为旧相册中尚未生成缩略图的图片补齐 thumbs 与 WebP，并在生成成功后为其写入 thumbnail_path（不会处理已标记为“不压缩”的相册和图片）。
+                    为旧相册中尚未生成缩略图的图片补齐 thumbs 与 WebP，并在生成成功后为其写入 thumbnail_path（不会处理已标记为"不压缩"的相册和图片）。
                 </div>
             </div>
         </div>
@@ -1722,7 +1734,7 @@ include __DIR__ . '/header.php';
                     fetchVideoStats();
                 })
                 .catch(function () {
-                    // 网络或解析异常时，不覆盖前面的提示，只恢复按钮，避免给出误导性的“失败”提示
+                    // 网络或解析异常时，不覆盖前面的提示，只恢复按钮，避免给出误导性的"失败"提示
                     btn.disabled = false;
                 });
         });

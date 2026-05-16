@@ -1,0 +1,42 @@
+services:
+  web:
+    build: .
+    container_name: love-story-web
+    ports:
+      - "${WEB_PORT:-8080}:80"
+    volumes:
+      - .:/var/www/html
+      - ./uploads:/var/www/html/uploads
+    environment:
+      DB_HOST: db
+      DB_PORT: 3306
+      DB_NAME: love_story
+      DB_USER: love_story
+      DB_PASS: love_story_dev
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  db:
+    image: mysql:5.7
+    container_name: love-story-db
+    ports:
+      - "${DB_PORT:-3308}:3306"
+    volumes:
+      - db_data:/var/lib/mysql
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+    environment:
+      MYSQL_ROOT_PASSWORD: root_dev_password
+      MYSQL_DATABASE: love_story
+      MYSQL_USER: love_story
+      MYSQL_PASSWORD: love_story_dev
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-proot_dev_password"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+
+volumes:
+  db_data:

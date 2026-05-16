@@ -1,4 +1,4 @@
-<?php
+﻿<?php
 /**
  * 通用辅助函数（UTF-8 中文版）
  */
@@ -144,12 +144,12 @@ function uploadFile($file, $subDir = '') {
         $relativePath = ltrim($relativePath, '/');
         $shouldOptimize = true;
 
-        // 当前请求级别的“跳过图片压缩”标记（如相册管理页一次性上传时临时关闭）
+        // 当前请求级别的"跳过图片压缩"标记（如相册管理页一次性上传时临时关闭）
         if (!empty($GLOBALS['YC_SKIP_IMAGE_OPTIMIZE'])) {
             $shouldOptimize = false;
         }
 
-        // 针对相册支持“保留原始画质”的开关（仅影响主图压缩，不影响缩略图与 WebP 生成）
+        // 针对相册支持"保留原始画质"的开关（仅影响主图压缩，不影响缩略图与 WebP 生成）
         if (strpos($relativePath, 'albums/') === 0 && class_exists('Database')) {
             try {
                 $parts = explode('/', $relativePath);
@@ -905,7 +905,7 @@ function parse_php_size_to_bytes(string $size): int {
 }
 
 /**
- * 将时间转成“多久之前”的中文描述
+ * 将时间转成"多久之前"的中文描述
  */
 function timeAgo($datetime) {
     $timestamp = strtotime($datetime);

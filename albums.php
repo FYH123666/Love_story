@@ -1,4 +1,4 @@
-<?php
+﻿<?php
 // 设置 UTF-8 编码
 header('Content-Type: text/html; charset=UTF-8');
 mb_internal_encoding('UTF-8');
@@ -218,9 +218,9 @@ include __DIR__ . '/views/header.php';
                     $previewItems = [];
                     try {
                         $rowsImg = $db->fetchAll(
-                            “SELECT COALESCE(thumb_url, thumbnail_path, image_path) AS path, created_at
+                            "SELECT COALESCE(thumb_url, thumbnail_path, image_path) AS path, created_at
                              FROM album_images
-                             WHERE album_id = :id”,
+                             WHERE album_id = :id",
                             ['id' => $album['id']]
                         );
                     } catch (Exception $e) {
@@ -241,9 +241,9 @@ include __DIR__ . '/views/header.php';
                     // 视频封面：优先使用封面图的 thumbs_320/medium 缩略图，其次回退到旧 thumbs/ 或封面主图
                     try {
                         $rowsVid = $db->fetchAll(
-                            “SELECT poster_path, created_at
+                            "SELECT poster_path, created_at
                              FROM album_videos
-                             WHERE album_id = :id”,
+                             WHERE album_id = :id",
                             ['id' => $album['id']]
                         );
                     } catch (Exception $e) {
@@ -412,7 +412,7 @@ include __DIR__ . '/views/header.php';
         var secondAvatar = '';
         var secondNickname = '';
 
-        // 仅当双方对相册都有实际参与（与“共创”标签同一判断）时才显示第二个头像
+        // 仅当双方对相册都有实际参与（与"共创"标签同一判断）时才显示第二个头像
         if (isCoCreated && userId && currentUserId && partnerUserId) {
             if (userId === currentUserId) {
                 secondAvatar = partnerAvatar || '';
