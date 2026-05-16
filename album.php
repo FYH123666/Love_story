@@ -231,14 +231,26 @@ include __DIR__ . '/views/header.php';
                             'uploader_avatar'=> $uploaderAvatar,
                         ];
                     } else {
+                        // 图片变体 URL：优先新字段，回退旧字段/原图
+                        $thumbPath  = !empty($image['thumb_url'])       ? $image['thumb_url']
+                            : (!empty($image['thumbnail_path']) ? $image['thumbnail_path'] : $imagePath);
+                        $mediumPath = !empty($image['medium_url'])      ? $image['medium_url']      : $imagePath;
+                        $webpUrl    = !empty($image['thumb_webp_url'])  ? $image['thumb_webp_url']
+                            : (!empty($image['webp_url'])       ? $image['webp_url']       : null);
+                        $mediumWebp = !empty($image['medium_webp_url']) ? $image['medium_webp_url']
+                            : (!empty($image['webp_url'])       ? $image['webp_url']       : null);
                         $mediaItems[] = [
-                            'type'          => 'image',
-                            'image_path'    => $imagePath,
-                            'thumbnail_path'=> $image['thumbnail_path'] ?? null,
-                            'description'   => $image['description'] ?? '',
-                            'created_at'    => $image['created_at'] ?? $album['created_at'],
-                            'uploader_name' => $uploaderName,
-                            'uploader_avatar'=> $uploaderAvatar,
+                            'type'            => 'image',
+                            'image_path'      => $imagePath,
+                            'thumbnail_path'  => $image['thumbnail_path'] ?? null,
+                            'thumb_url'       => $thumbPath,
+                            'medium_url'      => $mediumPath,
+                            'webp_url'        => $webpUrl,
+                            'medium_webp_url' => $mediumWebp,
+                            'description'     => $image['description'] ?? '',
+                            'created_at'      => $image['created_at'] ?? $album['created_at'],
+                            'uploader_name'   => $uploaderName,
+                            'uploader_avatar' => $uploaderAvatar,
                         ];
                     }
                 }
@@ -281,12 +293,15 @@ include __DIR__ . '/views/header.php';
                             // 暂未生成独立封面时，统一使用本地静态图作为视频封面占位
                             $previewUrl  = $previewPath ? upload_url($previewPath) : '/assets/images/Coverloaderror.jpg';
                         } else {
-                            // 相册详情瀑布流使用被压缩后的正式图，以保证清晰度
-                            $previewPath = $item['image_path'];
-                            $previewUrl  = upload_url($previewPath);
+                            // 瀑布流网格使用缩略图（320px 优先），灯箱使用中尺寸（1200px）
+                            $previewPath  = $item['thumb_url'] ?? $item['thumbnail_path'] ?? $item['image_path'];
+                            $lightboxPath = $item['medium_url'] ?? $item['image_path'];
+                            $previewUrl   = upload_url($previewPath);
+                            $lightboxUrl  = upload_url($lightboxPath);
                         }
-                        // 为支持 WebP 的浏览器准备 WebP 备用地址（若存在）
-                        $previewWebpUrl = preg_replace('/\.(jpg|jpeg|png)$/i', '.webp', $previewUrl);
+                        // WebP URL（优先专用字段，其次推导）
+                        $previewWebpUrl  = !empty($item['webp_url']) ? upload_url($item['webp_url']) : preg_replace('/\.(jpg|jpeg|png)$/i', '.webp', $previewUrl);
+                        $lightboxWebpUrl = !empty($item['medium_webp_url']) ? upload_url($item['medium_webp_url']) : preg_replace('/\.(jpg|jpeg|png)$/i', '.webp', $lightboxUrl);
                         $createdAt = $item['created_at'];
                         ?>
                         <div
@@ -304,8 +319,12 @@ include __DIR__ . '/views/header.php';
                             <div class="album-photo-media">
                                 <img src="/assets/images/image-placeholder.svg"
                                      data-src="<?php echo htmlspecialchars($previewUrl, ENT_QUOTES, 'UTF-8'); ?>"
-                                     <?php if (preg_match('/\.(jpg|jpeg|png)$/i', $previewUrl)): ?>
+                                     <?php if (!empty($previewWebpUrl)): ?>
                                          data-src-webp="<?php echo htmlspecialchars($previewWebpUrl, ENT_QUOTES, 'UTF-8'); ?>"
+                                     <?php endif; ?>
+                                     data-src-lightbox="<?php echo htmlspecialchars($lightboxUrl, ENT_QUOTES, 'UTF-8'); ?>"
+                                     <?php if (!empty($lightboxWebpUrl) && $lightboxWebpUrl !== $previewWebpUrl): ?>
+                                         data-src-lightbox-webp="<?php echo htmlspecialchars($lightboxWebpUrl, ENT_QUOTES, 'UTF-8'); ?>"
                                      <?php endif; ?>
                                      alt="">
                                 <?php if (!$isVideo): ?>
@@ -665,20 +684,27 @@ function updateMediaLightbox() {
             videoEl.addEventListener('loadedmetadata', onLoadedMetadata);
         }
     } else {
-        var imagePath = item.image_path;
+        // 灯箱优先使用中尺寸（1200px），回退原图
+        var imagePath = item.medium_url || item.image_path;
         var src = "<?php echo rtrim(UPLOAD_URL, '/'); ?>/" + imagePath;
 
         imgEl.style.display = 'block';
         videoEl.style.display = 'none';
 
         imgEl.onerror = null;
+        // 优先使用中尺寸 WebP，回退推导路径
+        var webpSrc = item.medium_webp_url
+            ? ("<?php echo rtrim(UPLOAD_URL, '/'); ?>/" + item.medium_webp_url)
+            : null;
+        if (!webpSrc) {
+            webpSrc = src.replace(/\.(jpg|jpeg|png)$/i, '.webp');
+        }
         if (window.__supportsWebP) {
-            var webp = src.replace(/\.(jpg|jpeg|png)$/i, '.webp');
             imgEl.onerror = function () {
                 imgEl.onerror = null;
                 imgEl.src = src;
             };
-            imgEl.src = webp;
+            imgEl.src = webpSrc;
         } else {
             imgEl.src = src;
         }

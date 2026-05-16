@@ -178,15 +178,58 @@ function uploadFile($file, $subDir = '') {
             }
         }
 
-        return [
+        // 收集生成的变体 URL（由 optimize_uploaded_image 写入全局缓存）
+        $variants = ['variants' => null];
+        if (isset($GLOBALS['YC_IMAGE_VARIANTS'][$filepath])) {
+            $variants['variants'] = $GLOBALS['YC_IMAGE_VARIANTS'][$filepath];
+            unset($GLOBALS['YC_IMAGE_VARIANTS'][$filepath]);
+        }
+
+        return array_merge([
             'success'  => true,
             'filename' => $filename,
             'path'     => $relativePath,
             'url'      => UPLOAD_URL . $relativePath,
-        ];
+        ], $variants);
     }
 
     return ['success' => false, 'message' => '保存上传文件失败'];
+}
+
+/**
+ * 获取图片展示 URL：优先新字段，回退旧字段
+ * 用于向前兼容历史数据（旧字段无数据时自动回退原图）
+ *
+ * @param string|null $newField 新字段值（如 thumb_url）
+ * @param string|null $oldField 旧字段值（如 thumbnail_path）
+ * @param string|null $fallbackPath 最终回退路径（如 image_path）
+ */
+function image_display_url(?string $newField, ?string $oldField = null, ?string $fallbackPath = null): string {
+    if ($newField !== null && $newField !== '') {
+        return upload_url($newField);
+    }
+    if ($oldField !== null && $oldField !== '') {
+        return upload_url($oldField);
+    }
+    if ($fallbackPath !== null && $fallbackPath !== '') {
+        return upload_url($fallbackPath);
+    }
+    return '';
+}
+
+/**
+ * 支持 CDN 的图片 URL 生成
+ * 若配置了 image_cdn_url，使用 CDN 域名；否则回退到 upload_url()
+ */
+function cdn_url(?string $path): string {
+    if ($path === null || $path === '') {
+        return '';
+    }
+    $cdn = get_setting('image_cdn_url', '');
+    if ($cdn !== '') {
+        return rtrim($cdn, '/') . '/' . ltrim($path, '/');
+    }
+    return upload_url($path);
 }
 
 /**
@@ -373,7 +416,7 @@ function optimize_uploaded_image(string $absolutePath): void {
 
     // 为相册图片额外生成缩略图：/uploads/albums/{id}/thumbs/{filename}
     // - 仅在图片位于 uploads/albums/ 目录下时启用
-    // - 长边约 480px，用于瀑布流 / 列表等场景，减轻前端加载压力
+    // - 长边 640px，用于瀑布流 / 列表等场景，减轻前端加载压力
     if ($relativePath !== '' && strpos($relativePath, 'albums/') === 0) {
         // 缩略图略微放大长边，提高在桌面端瀑布流中的清晰度
         $thumbMaxLongEdge = 640;
@@ -454,6 +497,133 @@ function optimize_uploaded_image(string $absolutePath): void {
 
             imagedestroy($thumbImg);
         }
+    }
+
+    // === 图片优化升级：生成 320px 缩略图（thumbs_320/）和 1200px 中尺寸（medium/）===
+    // 仅在相册图片目录下生成，且缩略图开关开启时
+    $thumbEnabled = get_setting('image_thumb_enabled', '1');
+    if ($relativePath !== '' && strpos($relativePath, 'albums/') === 0 && (string)$thumbEnabled === '1') {
+        $dirName  = dirname($absolutePath);
+        $fileName = basename($absolutePath);
+
+        // --- 320px 小缩略图（首页/列表卡片）---
+        $smallMaxLongEdge = 320;
+        $smallScale = 1.0;
+        if ($longEdge > $smallMaxLongEdge) {
+            $smallScale = $smallMaxLongEdge / $longEdge;
+        }
+
+        $smallW = max(1, (int) round($srcW * $smallScale));
+        $smallH = max(1, (int) round($srcH * $smallScale));
+
+        $smallDir  = $dirName . DIRECTORY_SEPARATOR . 'thumbs_320';
+        $smallPath = $smallDir . DIRECTORY_SEPARATOR . $fileName;
+
+        if (!is_dir($smallDir)) {
+            @mkdir($smallDir, 0755, true);
+        }
+
+        if ($smallScale === 1.0) {
+            @copy($absolutePath, $smallPath);
+        } else {
+            $smallImg = imagecreatetruecolor($smallW, $smallH);
+            if ($mime === 'image/png') {
+                imagealphablending($smallImg, false);
+                imagesavealpha($smallImg, true);
+            }
+            imagecopyresampled($smallImg, $srcImg, 0, 0, 0, 0, $smallW, $smallH, $srcW, $srcH);
+            if ($mime === 'image/jpeg') {
+                @imagejpeg($smallImg, $smallPath, 78);
+            } elseif ($mime === 'image/png') {
+                @imagepng($smallImg, $smallPath, 7);
+            } elseif ($mime === 'image/webp' && function_exists('imagewebp')) {
+                @imagewebp($smallImg, $smallPath, 78);
+            }
+            imagedestroy($smallImg);
+        }
+
+        // 320px 缩略图 WebP 副本
+        if ((string)$webpEnabled === '1' && function_exists('imagewebp')) {
+            $pi = pathinfo($smallPath);
+            if (!empty($pi['dirname']) && !empty($pi['filename'])) {
+                $ext = strtolower($pi['extension'] ?? '');
+                if ($ext !== 'webp') {
+                    $smallWebpPath = $pi['dirname'] . DIRECTORY_SEPARATOR . $pi['filename'] . '.webp';
+                    $smallSrc = ($ext === 'jpg' || $ext === 'jpeg') ? @imagecreatefromjpeg($smallPath) : @imagecreatefrompng($smallPath);
+                    if ($smallSrc) {
+                        @imagewebp($smallSrc, $smallWebpPath, 78);
+                        imagedestroy($smallSrc);
+                    }
+                }
+            }
+        }
+
+        // --- 1200px 中尺寸（灯箱预览）---
+        $mediumMaxLongEdge = 1200;
+        $mediumScale = 1.0;
+        if ($longEdge > $mediumMaxLongEdge) {
+            $mediumScale = $mediumMaxLongEdge / $longEdge;
+        }
+
+        $mediumW = max(1, (int) round($srcW * $mediumScale));
+        $mediumH = max(1, (int) round($srcH * $mediumScale));
+
+        $mediumDir  = $dirName . DIRECTORY_SEPARATOR . 'medium';
+        $mediumPath = $mediumDir . DIRECTORY_SEPARATOR . $fileName;
+
+        if (!is_dir($mediumDir)) {
+            @mkdir($mediumDir, 0755, true);
+        }
+
+        if ($mediumScale === 1.0) {
+            @copy($absolutePath, $mediumPath);
+        } else {
+            $mediumImg = imagecreatetruecolor($mediumW, $mediumH);
+            if ($mime === 'image/png') {
+                imagealphablending($mediumImg, false);
+                imagesavealpha($mediumImg, true);
+            }
+            imagecopyresampled($mediumImg, $srcImg, 0, 0, 0, 0, $mediumW, $mediumH, $srcW, $srcH);
+            if ($mime === 'image/jpeg') {
+                @imagejpeg($mediumImg, $mediumPath, 82);
+            } elseif ($mime === 'image/png') {
+                @imagepng($mediumImg, $mediumPath, 6);
+            } elseif ($mime === 'image/webp' && function_exists('imagewebp')) {
+                @imagewebp($mediumImg, $mediumPath, 82);
+            }
+            imagedestroy($mediumImg);
+        }
+
+        // 1200px 中尺寸 WebP 副本
+        if ((string)$webpEnabled === '1' && function_exists('imagewebp')) {
+            $pi = pathinfo($mediumPath);
+            if (!empty($pi['dirname']) && !empty($pi['filename'])) {
+                $ext = strtolower($pi['extension'] ?? '');
+                if ($ext !== 'webp') {
+                    $mediumWebpPath = $pi['dirname'] . DIRECTORY_SEPARATOR . $pi['filename'] . '.webp';
+                    $mediumSrc = ($ext === 'jpg' || $ext === 'jpeg') ? @imagecreatefromjpeg($mediumPath) : @imagecreatefrompng($mediumPath);
+                    if ($mediumSrc) {
+                        @imagewebp($mediumSrc, $mediumWebpPath, 82);
+                        imagedestroy($mediumSrc);
+                    }
+                }
+            }
+        }
+
+        // 将生成的变体相对路径缓存到静态数组，供 uploadFile() 取出写入数据库
+        // 路径格式与 image_path 一致：albums/{id}/thumbs_320/xxx.jpg
+        if (!isset($GLOBALS['YC_IMAGE_VARIANTS'])) {
+            $GLOBALS['YC_IMAGE_VARIANTS'] = [];
+        }
+        $variantRelativeDir = str_replace('\\', '/', trim(dirname($relativePath), '/'));
+        $baseFileName       = pathinfo($fileName, PATHINFO_FILENAME);
+        $GLOBALS['YC_IMAGE_VARIANTS'][$absolutePath] = [
+            'thumb_url'       => $variantRelativeDir . '/thumbs_320/' . $fileName,
+            'medium_url'      => $variantRelativeDir . '/medium/' . $fileName,
+            'webp_url'        => $variantRelativeDir . '/' . $baseFileName . '.webp',
+            'thumb_webp_url'  => $variantRelativeDir . '/thumbs_320/' . $baseFileName . '.webp',
+            'medium_webp_url' => $variantRelativeDir . '/medium/' . $baseFileName . '.webp',
+        ];
     }
 
     if ($dstImg !== $srcImg) {
@@ -1299,6 +1469,85 @@ function migrate_schema_if_needed(): void {
         } catch (Throwable $e) {
             // 字段已存在或执行失败时忽略
         }
+
+        // === 图片优化升级：新增缩略图/WebP/中尺寸字段（全部 NULL 默认，不影响旧数据） ===
+
+        // album_images 新字段
+        try {
+            $db->query("
+                ALTER TABLE `album_images`
+                ADD COLUMN `thumb_url` varchar(500) DEFAULT NULL COMMENT '小缩略图URL(320px)，首页/列表用'
+            ");
+        } catch (Throwable $e) { /* 已存在时忽略 */ }
+        try {
+            $db->query("
+                ALTER TABLE `album_images`
+                ADD COLUMN `medium_url` varchar(500) DEFAULT NULL COMMENT '中尺寸URL(1200px)，灯箱预览用'
+            ");
+        } catch (Throwable $e) { /* 已存在时忽略 */ }
+        try {
+            $db->query("
+                ALTER TABLE `album_images`
+                ADD COLUMN `webp_url` varchar(500) DEFAULT NULL COMMENT '主图WebP格式URL'
+            ");
+        } catch (Throwable $e) { /* 已存在时忽略 */ }
+        try {
+            $db->query("
+                ALTER TABLE `album_images`
+                ADD COLUMN `thumb_webp_url` varchar(500) DEFAULT NULL COMMENT '缩略图WebP(320px)'
+            ");
+        } catch (Throwable $e) { /* 已存在时忽略 */ }
+        try {
+            $db->query("
+                ALTER TABLE `album_images`
+                ADD COLUMN `medium_webp_url` varchar(500) DEFAULT NULL COMMENT '中尺寸WebP(1200px)'
+            ");
+        } catch (Throwable $e) { /* 已存在时忽略 */ }
+
+        // albums 新字段
+        try {
+            $db->query("
+                ALTER TABLE `albums`
+                ADD COLUMN `cover_thumb_url` varchar(500) DEFAULT NULL COMMENT '封面缩略图(320px)'
+            ");
+        } catch (Throwable $e) { /* 已存在时忽略 */ }
+        try {
+            $db->query("
+                ALTER TABLE `albums`
+                ADD COLUMN `cover_webp_url` varchar(500) DEFAULT NULL COMMENT '封面WebP'
+            ");
+        } catch (Throwable $e) { /* 已存在时忽略 */ }
+
+        // articles 新字段
+        try {
+            $db->query("
+                ALTER TABLE `articles`
+                ADD COLUMN `cover_image` varchar(500) DEFAULT NULL COMMENT '文章封面图（原始）'
+            ");
+        } catch (Throwable $e) { /* 已存在时忽略 */ }
+        try {
+            $db->query("
+                ALTER TABLE `articles`
+                ADD COLUMN `cover_thumb_url` varchar(500) DEFAULT NULL COMMENT '封面缩略图(320px)'
+            ");
+        } catch (Throwable $e) { /* 已存在时忽略 */ }
+        try {
+            $db->query("
+                ALTER TABLE `articles`
+                ADD COLUMN `cover_webp_url` varchar(500) DEFAULT NULL COMMENT '封面WebP'
+            ");
+        } catch (Throwable $e) { /* 已存在时忽略 */ }
+
+        // 新增图片优化相关配置项
+        try {
+            $db->query("
+                INSERT IGNORE INTO `settings` (`key`, `value`, `description`) VALUES
+                ('image_thumb_enabled', '1', '是否启用多尺寸缩略图（320px/1200px）'),
+                ('image_webp_enabled',  '1', '是否启用WebP自动生成'),
+                ('image_lazy_enabled',  '1', '是否启用前端懒加载'),
+                ('image_cdn_url',       '',  'CDN域名前缀，留空则使用站点自身URL')
+            ");
+        } catch (Throwable $e) { /* 已存在时忽略 */ }
     } catch (Throwable $e) {
         // 忽略迁移失败，保持主流程可用
     }

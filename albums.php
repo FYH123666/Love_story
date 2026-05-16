@@ -218,9 +218,9 @@ include __DIR__ . '/views/header.php';
                     $previewItems = [];
                     try {
                         $rowsImg = $db->fetchAll(
-                            "SELECT COALESCE(thumbnail_path, image_path) AS path, created_at 
-                             FROM album_images 
-                             WHERE album_id = :id",
+                            “SELECT COALESCE(thumb_url, thumbnail_path, image_path) AS path, created_at
+                             FROM album_images
+                             WHERE album_id = :id”,
                             ['id' => $album['id']]
                         );
                     } catch (Exception $e) {
@@ -238,12 +238,12 @@ include __DIR__ . '/views/header.php';
                         ];
                     }
 
-                    // 视频封面：优先使用封面图的 thumbs 缩略图，其次回退到封面主图
+                    // 视频封面：优先使用封面图的 thumbs_320/medium 缩略图，其次回退到旧 thumbs/ 或封面主图
                     try {
                         $rowsVid = $db->fetchAll(
-                            "SELECT poster_path, created_at 
-                             FROM album_videos 
-                             WHERE album_id = :id",
+                            “SELECT poster_path, created_at
+                             FROM album_videos
+                             WHERE album_id = :id”,
                             ['id' => $album['id']]
                         );
                     } catch (Exception $e) {
@@ -252,17 +252,21 @@ include __DIR__ . '/views/header.php';
 
                     foreach ($rowsVid as $row) {
                         $posterPath = trim($row['poster_path'] ?? '');
-                        // 无独立封面图时，使用统一默认封面图占位，避免视频在相册卡片中“消失”
                         if ($posterPath === '') {
                             $finalPath = '/assets/images/Coverloaderror.jpg';
                         } else {
                             $finalPath = $posterPath;
                             $pi = pathinfo($posterPath);
                             if (!empty($pi['dirname']) && !empty($pi['basename'])) {
-                                $thumbRelative = rtrim($pi['dirname'], '/\\') . '/thumbs/' . $pi['basename'];
-                                $thumbAbs = rtrim(UPLOAD_DIR, '/\\') . '/' . ltrim($thumbRelative, '/\\');
-                                if (is_file($thumbAbs)) {
-                                    $finalPath = $thumbRelative;
+                                // 优先使用新 320px 缩略图，其次旧 640px thumbs/
+                                $thumb320Relative = rtrim($pi['dirname'], '/\\') . '/thumbs_320/' . $pi['basename'];
+                                $thumb320Abs = rtrim(UPLOAD_DIR, '/\\') . '/' . ltrim($thumb320Relative, '/\\');
+                                $thumbOldRelative = rtrim($pi['dirname'], '/\\') . '/thumbs/' . $pi['basename'];
+                                $thumbOldAbs = rtrim(UPLOAD_DIR, '/\\') . '/' . ltrim($thumbOldRelative, '/\\');
+                                if (is_file($thumb320Abs)) {
+                                    $finalPath = $thumb320Relative;
+                                } elseif (is_file($thumbOldAbs)) {
+                                    $finalPath = $thumbOldRelative;
                                 }
                             }
                         }

@@ -26,8 +26,35 @@ if (function_exists('migrate_schema_if_needed')) {
 
 $adminPage = 'tools_stats';
 
-// 每次批处理的最大条数，避免超时（用于相册缩略图补齐相关操作）
+// 每次批处理的最大条数，避免超时
 $batchLimit = 100;
+
+// GD 辅助函数（供批处理复用）
+if (!function_exists('load_gd_image')) {
+    function load_gd_image(string $path, string $mime) {
+        switch ($mime) {
+            case 'image/jpeg': return @imagecreatefromjpeg($path);
+            case 'image/png':  return @imagecreatefrompng($path);
+            case 'image/webp': return function_exists('imagecreatefromwebp') ? @imagecreatefromwebp($path) : false;
+            default: return false;
+        }
+    }
+}
+if (!function_exists('save_gd_image')) {
+    function save_gd_image($img, string $path, string $mime, int $quality): void {
+        if ($mime === 'image/jpeg') {
+            @imagejpeg($img, $path, $quality);
+        } elseif ($mime === 'image/png') {
+            imagealphablending($img, false);
+            imagesavealpha($img, true);
+            // quality 约 70-88，映射为 PNG 级别 3-7
+            $pngLevel = min(9, max(0, (int)round(($quality - 70) / 5 + 3)));
+            @imagepng($img, $path, $pngLevel);
+        } elseif ($mime === 'image/webp' && function_exists('imagewebp')) {
+            @imagewebp($img, $path, $quality);
+        }
+    }
+}
 
 // AJAX: 统计压缩占比
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'stats') {
@@ -842,6 +869,212 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['mode'])) {
                 $success = "未检测到需要清理原始文件的文章视频（可能已清理完毕或尚未转码）。";
             }
         }
+    } elseif ($mode === 'fill_variant_fields') {
+        // 为历史相册图片生成并填充新变体字段（320px/1200px/WebP）
+        $_batchWebpEnabled = get_setting('image_webp_enabled', '1');
+        $_batchThumbEnabled = get_setting('image_thumb_enabled', '1');
+        try {
+            $rows = $db->fetchAll(
+                "SELECT ai.id, ai.album_id, ai.image_path,
+                        ai.thumb_url, ai.medium_url, ai.webp_url,
+                        ai.thumb_webp_url, ai.medium_webp_url
+                 FROM album_images ai
+                 WHERE (ai.thumb_url IS NULL OR ai.medium_url IS NULL
+                        OR ai.webp_url IS NULL OR ai.thumb_webp_url IS NULL
+                        OR ai.medium_webp_url IS NULL)
+                 ORDER BY ai.id ASC
+                 LIMIT :limit",
+                ['limit' => $batchLimit]
+            );
+        } catch (Throwable $e) {
+            $rows = [];
+            $error = '读取相册图片失败：' . $e->getMessage();
+        }
+
+        $processed = 0;
+        if (!$error && $rows) {
+            foreach ($rows as $row) {
+                $imagePath = $row['image_path'] ?? '';
+                if ($imagePath === '') continue;
+                $abs = rtrim(UPLOAD_DIR, '/\\') . '/' . ltrim($imagePath, '/');
+                if (!is_file($abs)) continue;
+
+                $info = @getimagesize($abs);
+                if (!$info) continue;
+                $srcW = (int)$info[0];
+                $srcH = (int)$info[1];
+                $mime = $info['mime'] ?? '';
+                if (!in_array($mime, ['image/jpeg', 'image/png', 'image/webp'], true)) continue;
+                if ($srcW <= 0 || $srcH <= 0) continue;
+
+                $dirName  = dirname($abs);
+                $fileName = basename($abs);
+                $longEdge = max($srcW, $srcH);
+
+                $updates = [];
+
+                // 320px 缩略图
+                if ($_batchThumbEnabled === '1' && empty($row['thumb_url'])) {
+                    $smallDir = $dirName . DIRECTORY_SEPARATOR . 'thumbs_320';
+                    $smallPath = $smallDir . DIRECTORY_SEPARATOR . $fileName;
+                    if (!is_dir($smallDir)) @mkdir($smallDir, 0755, true);
+                    if ($longEdge > 320) {
+                        $scale = 320 / $longEdge;
+                        $sw = max(1, (int)round($srcW * $scale));
+                        $sh = max(1, (int)round($srcH * $scale));
+                        $smallImg = imagecreatetruecolor($sw, $sh);
+                        $srcImg = load_gd_image($abs, $mime);
+                        if ($srcImg) {
+                            imagecopyresampled($smallImg, $srcImg, 0, 0, 0, 0, $sw, $sh, $srcW, $srcH);
+                            save_gd_image($smallImg, $smallPath, $mime, 78);
+                            imagedestroy($smallImg);
+                            imagedestroy($srcImg);
+                        }
+                    } else {
+                        @copy($abs, $smallPath);
+                    }
+                    if (is_file($smallPath)) {
+                        $rel = dirname($imagePath) . '/thumbs_320/' . $fileName;
+                        $updates['thumb_url'] = str_replace('\\', '/', ltrim($rel, '/'));
+                    }
+                }
+
+                // 1200px 中尺寸
+                if ($_batchThumbEnabled === '1' && empty($row['medium_url'])) {
+                    $mediumDir = $dirName . DIRECTORY_SEPARATOR . 'medium';
+                    $mediumPath = $mediumDir . DIRECTORY_SEPARATOR . $fileName;
+                    if (!is_dir($mediumDir)) @mkdir($mediumDir, 0755, true);
+                    if ($longEdge > 1200) {
+                        $scale = 1200 / $longEdge;
+                        $mw = max(1, (int)round($srcW * $scale));
+                        $mh = max(1, (int)round($srcH * $scale));
+                        $mediumImg = imagecreatetruecolor($mw, $mh);
+                        $srcImg = load_gd_image($abs, $mime);
+                        if ($srcImg) {
+                            imagecopyresampled($mediumImg, $srcImg, 0, 0, 0, 0, $mw, $mh, $srcW, $srcH);
+                            save_gd_image($mediumImg, $mediumPath, $mime, 82);
+                            imagedestroy($mediumImg);
+                            imagedestroy($srcImg);
+                        }
+                    } else {
+                        @copy($abs, $mediumPath);
+                    }
+                    if (is_file($mediumPath)) {
+                        $rel = dirname($imagePath) . '/medium/' . $fileName;
+                        $updates['medium_url'] = str_replace('\\', '/', ltrim($rel, '/'));
+                    }
+                }
+
+                // 主图 WebP
+                if ($_batchWebpEnabled === '1' && function_exists('imagewebp') && empty($row['webp_url']) && $mime !== 'image/webp') {
+                    $pi = pathinfo($abs);
+                    $webpAbs = $pi['dirname'] . DIRECTORY_SEPARATOR . $pi['filename'] . '.webp';
+                    $srcImg = load_gd_image($abs, $mime);
+                    if ($srcImg) {
+                        @imagewebp($srcImg, $webpAbs, 82);
+                        imagedestroy($srcImg);
+                        if (is_file($webpAbs)) {
+                            $baseName = $pi['filename'] . '.webp';
+                            $rel = dirname($imagePath) . '/' . $baseName;
+                            $updates['webp_url'] = str_replace('\\', '/', ltrim($rel, '/'));
+                        }
+                    }
+                }
+
+                // 320px WebP
+                if ($_batchWebpEnabled === '1' && function_exists('imagewebp') && empty($row['thumb_webp_url'])) {
+                    $smallPath = $dirName . DIRECTORY_SEPARATOR . 'thumbs_320' . DIRECTORY_SEPARATOR . $fileName;
+                    if (is_file($smallPath)) {
+                        $ext = strtolower(pathinfo($smallPath, PATHINFO_EXTENSION));
+                        if ($ext !== 'webp') {
+                            $pi = pathinfo($smallPath);
+                            $wAbs = $pi['dirname'] . DIRECTORY_SEPARATOR . $pi['filename'] . '.webp';
+                            $sImg = ($ext === 'png') ? @imagecreatefrompng($smallPath) : @imagecreatefromjpeg($smallPath);
+                            if ($sImg) {
+                                @imagewebp($sImg, $wAbs, 78);
+                                imagedestroy($sImg);
+                                if (is_file($wAbs)) {
+                                    $rel = dirname($imagePath) . '/thumbs_320/' . $pi['filename'] . '.webp';
+                                    $updates['thumb_webp_url'] = str_replace('\\', '/', ltrim($rel, '/'));
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 1200px WebP
+                if ($_batchWebpEnabled === '1' && function_exists('imagewebp') && empty($row['medium_webp_url'])) {
+                    $mediumPath = $dirName . DIRECTORY_SEPARATOR . 'medium' . DIRECTORY_SEPARATOR . $fileName;
+                    if (is_file($mediumPath)) {
+                        $ext = strtolower(pathinfo($mediumPath, PATHINFO_EXTENSION));
+                        if ($ext !== 'webp') {
+                            $pi = pathinfo($mediumPath);
+                            $wAbs = $pi['dirname'] . DIRECTORY_SEPARATOR . $pi['filename'] . '.webp';
+                            $sImg = ($ext === 'png') ? @imagecreatefrompng($mediumPath) : @imagecreatefromjpeg($mediumPath);
+                            if ($sImg) {
+                                @imagewebp($sImg, $wAbs, 82);
+                                imagedestroy($sImg);
+                                if (is_file($wAbs)) {
+                                    $rel = dirname($imagePath) . '/medium/' . $pi['filename'] . '.webp';
+                                    $updates['medium_webp_url'] = str_replace('\\', '/', ltrim($rel, '/'));
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (!empty($updates)) {
+                    try {
+                        $db->update('album_images', $updates, 'id = :id', ['id' => $row['id']]);
+                        $processed++;
+                    } catch (Throwable $e) { /* skip */ }
+                }
+            }
+        }
+        if (!$error) {
+            $success = "本次为 {$processed} 张历史相册图片补齐了新变体字段（320px/1200px/WebP）。如仍有剩余，可再次点击执行。";
+        }
+    } elseif ($mode === 'article_cover_images') {
+        // 为文章自动提取首张图片作为封面
+        try {
+            $rows = $db->fetchAll(
+                "SELECT id, content
+                 FROM articles
+                 WHERE cover_image IS NULL AND status = 'published'
+                 ORDER BY id ASC
+                 LIMIT :limit",
+                ['limit' => $batchLimit]
+            );
+        } catch (Throwable $e) {
+            $rows = [];
+            $error = '读取文章失败：' . $e->getMessage();
+        }
+
+        $processed = 0;
+        if (!$error && $rows) {
+            foreach ($rows as $row) {
+                $html = (string)($row['content'] ?? '');
+                if ($html === '') continue;
+                if (!preg_match('/<img\s+[^>]*src=("|\')([^"\']*uploads\/[^"\']+\.(?:jpg|jpeg|png|webp))\1/i', $html, $m)) {
+                    continue;
+                }
+                $src = $m[2];
+                $p = preg_replace('#^https?://[^/]+/#i', '/', $src);
+                $p = ltrim($p, '/');
+                if (strpos($p, 'uploads/') !== 0) continue;
+                $relative = substr($p, strlen('uploads/'));
+                $abs = rtrim(UPLOAD_DIR, '/\\') . '/' . $relative;
+                if (!is_file($abs)) continue;
+
+                try {
+                    $db->update('articles', ['cover_image' => $relative], 'id = :id', ['id' => $row['id']]);
+                    $processed++;
+                } catch (Throwable $e) { /* skip */ }
+            }
+        }
+        if (!$error) {
+            $success = "本次为 {$processed} 篇文章自动提取了封面图。如仍有剩余，可再次点击执行。";
+        }
     } else {
         $error = '无效的操作类型';
     }
@@ -1171,6 +1404,77 @@ include __DIR__ . '/header.php';
             <button type="submit" class="btn btn-danger">
                 <i class="fas fa-trash-alt"></i>
                 <span>执行一次文章原始视频清理</span>
+            </button>
+        </form>
+    </div>
+
+    <!-- ======== 图片优化升级：新增工具卡片 ======== -->
+
+    <div class="admin-card">
+        <div class="admin-card-header">
+            <div>
+                <div class="admin-card-title">图片优化升级：补齐新变体字段（320px / 1200px / WebP）</div>
+                <div class="admin-card-subtitle">
+                    为历史相册图片自动生成 <code>thumb_url</code>（320px）、<code>medium_url</code>（1200px）、
+                    <code>webp_url</code> 及对应 WebP 副本，并回填新字段。仅处理新字段为空的图片，不影响旧字段。
+                </div>
+            </div>
+        </div>
+        <form method="POST">
+            <?php echo csrf_field(); ?>
+            <input type="hidden" name="mode" value="fill_variant_fields">
+            <p style="font-size:0.85rem;color:var(--text-light);margin-bottom:0.75rem;">
+                每次最多处理 <?php echo (int)$batchLimit; ?> 张图片。仅当 <code>image_thumb_enabled</code> / <code>image_webp_enabled</code>
+                设置为开启时才会生成对应变体。已有数据的字段将被跳过，不会重复生成。建议在非高峰时间多次执行，直到提示无变化为止。
+            </p>
+            <button type="submit" class="btn btn-primary">
+                <i class="fas fa-images"></i>
+                <span>执行一次变体字段补齐</span>
+            </button>
+        </form>
+    </div>
+
+    <div class="admin-card">
+        <div class="admin-card-header">
+            <div>
+                <div class="admin-card-title">文章封面图：自动提取首张图片</div>
+                <div class="admin-card-subtitle">
+                    扫描文章正文，自动提取第一张引用图片的路径填充到 <code>cover_image</code> 字段。
+                    仅处理 <code>cover_image IS NULL</code> 的已发布文章，不影响已有封面。
+                </div>
+            </div>
+        </div>
+        <form method="POST">
+            <?php echo csrf_field(); ?>
+            <input type="hidden" name="mode" value="article_cover_images">
+            <p style="font-size:0.85rem;color:var(--text-light);margin-bottom:0.75rem;">
+                每次最多扫描 <?php echo (int)$batchLimit; ?> 篇文章。仅取每篇文章的第一张图片作为封面。
+            </p>
+            <button type="submit" class="btn btn-secondary">
+                <i class="fas fa-file-image"></i>
+                <span>执行一次封面提取</span>
+            </button>
+        </form>
+    </div>
+
+    <div class="admin-card">
+        <div class="admin-card-header">
+            <div>
+                <div class="admin-card-title">首页大图：生成 WebP 副本</div>
+                <div class="admin-card-subtitle">
+                    为当前设置的首页大图（<code>home_banner_image</code>）按需补齐 WebP 与压缩版本，提升首屏加载速度。
+                </div>
+            </div>
+        </div>
+        <form method="POST">
+            <?php echo csrf_field(); ?>
+            <input type="hidden" name="mode" value="generate_hero_variants">
+            <p style="font-size:0.85rem;color:var(--text-light);margin-bottom:0.75rem;">
+                操作一次即可，重复执行不会覆盖已有文件。
+            </p>
+            <button type="submit" class="btn btn-secondary">
+                <i class="fas fa-image"></i>
+                <span>为首页大图补齐 WebP</span>
             </button>
         </form>
     </div>

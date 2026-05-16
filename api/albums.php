@@ -62,17 +62,18 @@ try {
             $mediaMap[(int)$aIdRaw] = [];
         }
 
-        // 图片预览：COALESCE(thumbnail_path, image_path)
+        // 图片预览：优先新字段 thumb_url，其次旧 thumbnail_path，最后原图 image_path
         $rows = $db->fetchAll(
-            "SELECT album_id, image_path, thumbnail_path, created_at
-             FROM album_images 
-             WHERE album_id IN ($placeholders) 
+            "SELECT album_id, image_path, thumb_url, thumbnail_path, created_at
+             FROM album_images
+             WHERE album_id IN ($placeholders)
              ORDER BY album_id ASC, created_at DESC, id DESC",
             $albumIds
         );
         foreach ($rows as $row) {
             $aid = (int) $row['album_id'];
-            $path = $row['thumbnail_path'] ?: $row['image_path'];
+            $path = !empty($row['thumb_url']) ? $row['thumb_url']
+                : (!empty($row['thumbnail_path']) ? $row['thumbnail_path'] : $row['image_path']);
             if (!$path) {
                 continue;
             }
@@ -99,17 +100,21 @@ try {
         foreach ($rowsVideo as $row) {
             $aid = (int) $row['album_id'];
             $posterPath = trim($row['poster_path'] ?? '');
-            // 无独立封面图时，使用统一默认封面图占位，避免视频在相册卡片中“消失”
             if ($posterPath === '') {
                 $finalPath = '/assets/images/Coverloaderror.jpg';
             } else {
                 $finalPath = $posterPath;
                 $pi = pathinfo($posterPath);
                 if (!empty($pi['dirname']) && !empty($pi['basename'])) {
-                    $thumbRelative = rtrim($pi['dirname'], '/\\') . '/thumbs/' . $pi['basename'];
-                    $thumbAbs = rtrim(UPLOAD_DIR, '/\\') . '/' . ltrim($thumbRelative, '/\\');
-                    if (is_file($thumbAbs)) {
-                        $finalPath = $thumbRelative;
+                    // 优先新 320px 缩略图，其次旧 640px thumbs/
+                    $thumb320Relative = rtrim($pi['dirname'], '/\\') . '/thumbs_320/' . $pi['basename'];
+                    $thumb320Abs = rtrim(UPLOAD_DIR, '/\\') . '/' . ltrim($thumb320Relative, '/\\');
+                    $thumbOldRelative = rtrim($pi['dirname'], '/\\') . '/thumbs/' . $pi['basename'];
+                    $thumbOldAbs = rtrim(UPLOAD_DIR, '/\\') . '/' . ltrim($thumbOldRelative, '/\\');
+                    if (is_file($thumb320Abs)) {
+                        $finalPath = $thumb320Relative;
+                    } elseif (is_file($thumbOldAbs)) {
+                        $finalPath = $thumbOldRelative;
                     }
                 }
             }
